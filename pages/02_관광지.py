@@ -142,19 +142,3 @@ st.sidebar.download_button('requirements.txt 다운로드', data=req_txt, file_n
 # Footer
 st.markdown('---')
 st.caption('앱: Folium + Streamlit 예시. Streamlit Cloud(현재 이름: Streamlit Community Cloud)에 배포하려면 이 디렉터리에 `app.py`와 `requirements.txt`를 업로드하세요.')
-
-# ---------------------------
-# requirements.txt (파일로 저장하세요)
-# ---------------------------
-# 아래 내용을 `requirements.txt`로 저장하세요:
-#
-# streamlit>=1.24
-# folium>=0.14.0
-# streamlit-folium>=0.11.0
-# pandas>=1.5
-# branca>=0.6.0
-#
-# 사용법:
-# 1) 이 폴더에 app.py 와 requirements.txt 를 저장
-# 2) 로컬에서 확인하려면: `streamlit run app.py`
-# 3) Streamlit Cloud에 배포하려면, GitHub 리포지토리에 푸시 후 Streamlit에 연결
