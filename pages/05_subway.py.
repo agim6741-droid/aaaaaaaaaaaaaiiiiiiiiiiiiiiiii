@@ -1,0 +1,210 @@
+# app.py
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+from datetime import datetime
+
+st.set_page_config(page_title="Subway Top10 Stations (Oct 2025)", layout="wide")
+
+st.title("지하철 상위 10개역 (2025-10) — Streamlit + Plotly")
+st.markdown(
+    """
+    **설명:** 업로드된 CSV 또는 기본 파일에서 `사용일자`, `노선명`, `역명`, `승차총승객수`, `하차총승객수` 컬럼을 사용합니다.  
+    날짜와 호선 선택 시, 해당 조건의 역별(또는 역코드별) **(승차 + 하차)** 합계 상위 10개역을 인터랙티브 막대그래프로 출력합니다.
+    """
+)
+
+# ---- Sidebar: file upload or default ----
+st.sidebar.header("데이터 입력")
+st.sidebar.write("CSV 파일을 업로드하거나 (없다면) 기본 파일을 사용하세요.")
+uploaded = st.sidebar.file_uploader("CSV 파일 업로드 (권장: UTF-8/CP949)", type=["csv"])
+
+# If running on Streamlit Cloud, put the dataset in the repo and set this path accordingly.
+DEFAULT_PATH = "CARD_SUBWAY_MONTH_202510 (1).csv"
+
+use_default = False
+if uploaded is None:
+    st.sidebar.write("업로드된 파일이 없습니다. 기본 파일 사용 시, 앱 디렉토리에 아래 파일이 있어야 합니다:")
+    st.sidebar.code(DEFAULT_PATH)
+    use_default = st.sidebar.checkbox("기본 파일 사용", value=True)
+
+@st.cache_data(ttl=600)
+def load_data(uploaded_file, default_path):
+    # Try to read uploaded file (file-like) first, otherwise try default path with multiple encodings
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file, encoding="utf-8")
+        except Exception:
+            # try common encodings
+            try:
+                df = pd.read_csv(uploaded_file, encoding="cp949")
+            except Exception:
+                df = pd.read_csv(uploaded_file, encoding="latin1")
+        return df
+    # default path attempt with multiple encodings
+    encs = ["utf-8", "cp949", "euc-kr", "latin1"]
+    last_err = None
+    for e in encs:
+        try:
+            df = pd.read_csv(default_path, encoding=e)
+            return df
+        except Exception as ex:
+            last_err = ex
+    raise IOError(f"Failed to read default CSV. Last error: {last_err}")
+
+try:
+    df = load_data(uploaded if not use_default else None, DEFAULT_PATH if use_default else None)
+except Exception as e:
+    st.error(f"데이터 불러오기 실패: {e}")
+    st.stop()
+
+# ---- Preprocess ----
+st.sidebar.header("전처리 옵션")
+# Normalize column names (strip)
+df.columns = df.columns.str.strip()
+
+required_cols = ["사용일자", "노선명", "역명", "승차총승객수", "하차총승객수"]
+missing_cols = [c for c in required_cols if c not in df.columns]
+if missing_cols:
+    st.error(f"필요한 컬럼이 누락됨: {missing_cols}. CSV 컬럼명을 확인해주세요.")
+    st.write("현재 컬럼들:", list(df.columns))
+    st.stop()
+
+# Parse '사용일자' to datetime with robust parsing
+def parse_date_series(s):
+    # try numeric like 20251001 -> parse via strptime
+    ser = s.astype(str).str.strip()
+    # if it's pure digits and length 8, try YYYYMMDD
+    mask_8digit = ser.str.match(r"^\d{8}$")
+    out = pd.to_datetime(ser, errors='coerce', infer_datetime_format=True)
+    # For any that are still NaT and are 8-digit, try manual
+    if mask_8digit.any():
+        try:
+            out2 = pd.to_datetime(ser[mask_8digit], format="%Y%m%d", errors='coerce')
+            out.loc[mask_8digit] = out2
+        except Exception:
+            pass
+    return out
+
+df["사용일자_parsed"] = parse_date_series(df["사용일자"])
+if df["사용일자_parsed"].isna().all():
+    st.error("`사용일자` 컬럼이 날짜로 파싱되지 않았습니다. 형식을 확인하세요.")
+    st.stop()
+
+# Ensure numeric columns
+for col in ["승차총승객수", "하차총승객수"]:
+    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+
+# If 역명 is numeric code, convert to string for display
+df["역표시"] = df["역명"].astype(str)
+
+# ---- Controls: date (limit to Oct 2025) and line selection ----
+st.sidebar.header("필터")
+# Limit date range to October 2025
+min_date = datetime(2025, 10, 1)
+max_date = datetime(2025, 10, 31)
+# default date try to pick first date present in df within Oct 2025
+dates_in_oct = df.loc[
+    (df["사용일자_parsed"] >= min_date) & (df["사용일자_parsed"] <= max_date),
+    "사용일자_parsed",
+].dropna().unique()
+if len(dates_in_oct) == 0:
+    st.error("데이터에 2025년 10월의 날짜가 없습니다.")
+    st.stop()
+
+default_date = pd.to_datetime(min_date)
+if len(dates_in_oct) > 0:
+    default_date = pd.to_datetime(sorted(dates_in_oct)[0])
+
+date_sel = st.sidebar.date_input(
+    "날짜 선택 (2025-10 중 하루)", value=default_date, min_value=min_date, max_value=max_date
+)
+# Force convert date_input to datetime (no time)
+date_sel = pd.to_datetime(pd.to_datetime(date_sel).date())
+
+# 호선 선택
+unique_lines = df["노선명"].astype(str).sort_values().unique().tolist()
+line_sel = st.sidebar.selectbox("호선 선택 (노선명)", options=unique_lines)
+
+# ---- Filter dataframe ----
+mask = (df["사용일자_parsed"].dt.date == date_sel.date()) & (df["노선명"].astype(str) == str(line_sel))
+filtered = df.loc[mask].copy()
+
+st.subheader(f"선택: {date_sel.date()} / 호선: {line_sel} — 레코드 수: {len(filtered)}")
+if filtered.empty:
+    st.warning("선택한 날짜와 호선에 해당하는 데이터가 없습니다. 다른 조합을 선택하세요.")
+    st.stop()
+
+# Compute sum (승차 + 하차) per 역
+filtered["승하합계"] = filtered["승차총승객수"] + filtered["하차총승객수"]
+grouped = (
+    filtered.groupby(["역표시"], as_index=False)[["승하합계", "승차총승객수", "하차총승객수"]]
+    .sum()
+    .sort_values("승하합계", ascending=False)
+)
+top10 = grouped.head(10).reset_index(drop=True)
+top10["rank"] = top10.index + 1
+
+# ---- Color scheme: 1st burgundy, rest baby pink -> fading gradient (decreasing opacity) ----
+# burgundy rgb(128,0,32), baby pink rgb(255,182,193)
+burgundy = "rgba(128,0,32,1)"
+baby_rgb = (255, 182, 193)
+# For ranks 2..10 generate opacities from 1.0 down to 0.3 (or choose range)
+n_rest = max(1, len(top10) - 1)
+opacities = np.linspace(1.0, 0.3, n_rest) if n_rest > 0 else []
+colors = []
+for i in top10["rank"]:
+    if i == 1:
+        colors.append(burgundy)
+    else:
+        idx = i - 2  # 0-based for rest
+        a = float(opacities[idx]) if idx < len(opacities) else 0.4
+        colors.append(f"rgba({baby_rgb[0]},{baby_rgb[1]},{baby_rgb[2]},{a:.3f})")
+
+# ---- Plot with Plotly ----
+st.subheader("Top 10 Stations (승하합계 기준) — 막대그래프")
+fig = px.bar(
+    top10,
+    x="역표시",
+    y="승하합계",
+    text="승하합계",
+    labels={"역표시": "역(역코드/이름)", "승하합계": "승차 + 하차 (합계)"},
+    height=520,
+)
+
+# apply custom colors in descending order (Plotly maps colors per data index)
+fig.update_traces(marker_color=colors, marker_line_color="rgba(0,0,0,0.08)", textposition="outside")
+fig.update_layout(
+    xaxis_title="역",
+    yaxis_title="승하합계",
+    uniformtext_minsize=8,
+    uniformtext_mode="hide",
+    margin=dict(l=40, r=40, t=40, b=120),
+    xaxis_tickangle=-45,
+)
+
+# Add subtitle / annotation for top rank
+if not top10.empty:
+    first_station = top10.iloc[0]["역표시"]
+    first_value = int(top10.iloc[0]["승하합계"])
+    st.markdown(f"**1위:** {first_station} — {first_value}명 (버건디 강조)")
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ---- Table and download ----
+with st.expander("Top 10 표 보기 / 다운로드"):
+    st.dataframe(top10[["rank", "역표시", "승차총승객수", "하차총승객수", "승하합계"]].rename(
+        columns={
+            "역표시": "역(역코드/이름)",
+            "승차총승객수": "승차총승객수(합계)",
+            "하차총승객수": "하차총승객수(합계)",
+        }
+    ))
+
+    csv_bytes = top10.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Top10 CSV 다운로드", data=csv_bytes, file_name=f"top10_{date_sel.date()}_{line_sel}.csv", mime="text/csv")
+
+# ---- Footer / tips ----
+st.markdown("---")
+st.caption("앱: Streamlit + Plotly · 기본 날짜 범위: 2025-10-01 ~ 2025-10-31 · 데이터 컬럼 이름이 다르면 앱이 멈춥니다.")
