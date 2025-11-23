@@ -16,16 +16,38 @@ st.markdown(page_style, unsafe_allow_html=True)
 
 st.title("🍰 디저트 유행 분석 & 카페 추천")
 
-# ===== CSV 로컬 경로 =====
+# ===== CSV 파일 경로 =====
 dessert_path = "DESSERT.csv"
 cafe_path = "CAFE.csv"
 
-# ===== CSV 읽기 (인코딩, 컬럼 공백 처리) =====
-dessert_df = pd.read_csv(dessert_path, encoding="utf-8-sig")
-cafe_df = pd.read_csv(cafe_path, encoding="utf-8-sig")
+# ===== 파일 존재 여부 체크 =====
+if not os.path.exists(dessert_path) or not os.path.exists(cafe_path):
+    st.error("❌ CSV 파일이 존재하지 않습니다. 앱 폴더 안에 'DESSERT.csv'와 'CAFE.csv'를 넣어주세요.")
+    st.stop()
 
+# ===== CSV 읽기 (인코딩 자동 처리) =====
+def read_csv_safe(path):
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    except:
+        return pd.read_csv(path, encoding="cp949")
+
+dessert_df = read_csv_safe(dessert_path)
+cafe_df = read_csv_safe(cafe_path)
+
+# ===== 컬럼명 공백 제거 =====
 dessert_df.columns = dessert_df.columns.str.strip()
 cafe_df.columns = cafe_df.columns.str.strip()
+
+# ===== 컬럼 체크 =====
+required_dessert_cols = ["날짜"] + list(dessert_df.columns[1:])
+if "날짜" not in dessert_df.columns or len(dessert_df.columns) < 2:
+    st.error("❌ DESSERT.csv에 '날짜' 컬럼 또는 디저트 컬럼이 없습니다.")
+    st.stop()
+
+if "디저트" not in cafe_df.columns:
+    st.error("❌ CAFE.csv에 '디저트' 컬럼이 없습니다.")
+    st.stop()
 
 # ===== 날짜 변환 =====
 dessert_df["날짜"] = pd.to_datetime(dessert_df["날짜"], errors="coerce")
@@ -41,8 +63,6 @@ end_date = st.date_input("종료 날짜", value=dessert_df["날짜"].max().date(
 mask = (dessert_df["날짜"] >= pd.to_datetime(start_date)) & \
        (dessert_df["날짜"] <= pd.to_datetime(end_date))
 filtered = dessert_df[mask].copy()
-
-# ===== 숫자 변환 =====
 filtered[selected_dessert] = pd.to_numeric(filtered[selected_dessert], errors="coerce")
 
 # ===== 그래프 =====
@@ -51,7 +71,9 @@ fig = px.line(
     x="날짜",
     y=selected_dessert,
     title=f"{selected_dessert} 검색량 변화",
-    markers=True
+    markers=True,
+    line_shape='spline',
+    template='plotly_white'
 )
 st.plotly_chart(fig)
 
