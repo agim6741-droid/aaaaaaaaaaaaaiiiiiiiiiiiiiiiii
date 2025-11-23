@@ -1,263 +1,171 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import datetime
-from pathlib import Path
+from datetime import date, timedelta
 
-# ---------- Config ----------
-st.set_page_config(page_title="디저트 트렌드 & 카페 추천", layout="wide")
-BASE_PATH = Path("/mnt/data")
-DESSERT_CSV = BASE_PATH / "DESSERT.csv.csv"
-CAFE_CSV = BASE_PATH / "CAFE.csv.csv"
-
-# ---------- Styling (beige / brown) ----------
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background: linear-gradient(180deg, #F7EFE6 0%, #E9DCC9 100%);
-        color: #3E2723;
-    }
-    .sidebar .sidebar-content {
-        background: #E7D4BF;
-    }
-    .stButton>button {
-        background-color: #8D6E63;
-        color: white;
-    }
-    .big-title {
-        font-size:32px;
-        font-weight:700;
-        color:#4E342E;
-    }
-    .muted {
-        color:#5D4037;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown('<div class="big-title">🍰 디저트 트렌드 탐색 & 카페 추천</div>', unsafe_allow_html=True)
-st.markdown("선택한 기간 내에 디저트가 얼마나 검색(언급)되었는지 시각화하고, 해당 디저트를 판매하는 카페를 추천합니다. (UI 색상은 카페 분위기 — 베이지/갈색 계열)")
-
-# ---------- Helpers to detect columns ----------
-def detect_date_column(df):
-    for c in df.columns:
-        lc = c.lower()
-        if "date" in lc or "day" in lc or "time" in lc:
-            return c
-    # fallback: first datetime-like column
-    for c in df.columns:
-        try:
-            pd.to_datetime(df[c])
-            return c
-        except Exception:
-            continue
-    return None
-
-def detect_count_column(df):
-    # common names
-    for c in df.columns:
-        lc = c.lower()
-        if any(x in lc for x in ["count","search","mentions","value","hits","freq","frequency"]):
-            return c
-    # fallback numeric column (excluding obvious id columns)
-    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    if numeric_cols:
-        return numeric_cols[0]
-    return None
-
-# ---------- Load data ----------
+# 1. 파일 로드 및 데이터 분석
 @st.cache_data
-def load_csv(path):
-    try:
-        df = pd.read_csv(path)
-        return df
-    except Exception as e:
-        st.error(f"파일을 불러오지 못했습니다: {path}\\n에러: {e}")
-        return None
+def load_data(dessert_path, cafe_path):
+    """CSV 파일을 로드하고 '날짜' 열을 datetime 형식으로 변환합니다."""
+    # DESSERT.csv 로드 및 날짜 처리
+    df_dessert = pd.read_csv(dessert_path)
+    df_dessert['날짜'] = pd.to_datetime(df_dessert['날짜'])
+    df_dessert = df_dessert.set_index('날짜').sort_index()
 
-dessert_df = load_csv(DESSERT_CSV)
-cafe_df = load_csv(CAFE_CSV)
+    # CAFE.csv 로드
+    df_cafe = pd.read_csv(cafe_path)
 
-if dessert_df is None:
-    st.stop()
+    return df_dessert, df_cafe
 
-# ---------- Analyze DESSERT.csv ----------
-st.header("1) DESSERT.csv 데이터 확인")
-st.write("파일 경로:", str(DESSERT_CSV))
-st.write("기본 정보:")
-st.write(f"- 행: {len(dessert_df)}, 열: {len(dessert_df.columns)}")
-st.dataframe(dessert_df.head(10))
+# 4. Plotly 그래프 생성
+def create_line_chart(df, dessert_name, start_date, end_date):
+    """선택된 기간 및 디저트에 대한 Plotly 라인 그래프를 생성합니다."""
+    # 선택된 기간으로 데이터 필터링
+    df_filtered = df.loc[start_date:end_date, [dessert_name]]
 
-date_col = detect_date_column(dessert_df)
-count_col = detect_count_column(dessert_df)
-dessert_col = None
-for c in dessert_df.columns:
-    if "dessert" in c.lower() or "name" in c.lower() or "item" in c.lower():
-        dessert_col = c
-        break
-# fallback: try to find a column with few unique values and string type (likely dessert names)
-if dessert_col is None:
-    string_cols = dessert_df.select_dtypes(include=["object"]).columns.tolist()
-    for c in string_cols:
-        if 1 < dessert_df[c].nunique() < max(50, len(dessert_df)//5):
-            dessert_col = c
-            break
+    # Plotly 그래프 생성
+    fig = px.line(
+        df_filtered,
+        x=df_filtered.index,
+        y=dessert_name,
+        title=f"📅 {start_date.strftime('%Y-%m-%d')}부터 {end_date.strftime('%Y-%m-%d')}까지의 **{dessert_name}** 검색량 변화",
+        labels={'날짜': '날짜', dessert_name: '상대적 검색량'},
+        color_discrete_sequence=['#A0522D'] # 시에나 (갈색 계열)
+    )
 
-if date_col is None or dessert_col is None or count_col is None:
-    st.warning("파일에서 주요 컬럼(날짜, 디저트명, 카운트)을 자동으로 찾지 못했을 수 있습니다. 아래 선택 박스로 수동 지정하세요.")
-    col1, col2, col3 = st.columns(3)
+    fig.update_layout(
+        xaxis_title="날짜",
+        yaxis_title="상대적 검색량",
+        plot_bgcolor='white',
+        paper_bgcolor='#FFF8E1', # 미색/베이지 배경
+        font_color='#5D4037', # 진한 갈색 글씨
+        title_font_size=20,
+        hovermode="x unified"
+    )
+
+    fig.update_traces(mode='lines+markers')
+    return fig
+
+# 2. 스트림릿에서 작동되는 코드
+def main():
+    # --- 9. 베이지와 갈색 조합의 테마 설정 (Style) ---
+    st.markdown("""
+        <style>
+            .stApp {
+                background-color: #FFF8E1; /* 라이트 베이지 배경 */
+                color: #5D4037; /* 진한 갈색 글씨 */
+            }
+            .stButton>button {
+                background-color: #A0522D; /* 시에나 (갈색) 버튼 배경 */
+                color: white;
+                border-radius: 10px;
+                border: none;
+                padding: 10px 24px;
+                font-weight: bold;
+            }
+            .stButton>button:hover {
+                background-color: #8B4513; /* 더 진한 갈색 */
+            }
+            .stSelectbox div[role="listbox"] {
+                background-color: #F5F5DC; /* 베이지색 드롭다운 배경 */
+            }
+            h1, h2, h3 {
+                color: #5D4037; /* 진한 갈색 헤더 */
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+    st.title("🍰 디저트 트렌드 & 카페 추천 서비스")
+    st.markdown("---")
+
+    # 데이터 로드
+    df_dessert, df_cafe = load_data("CAFE.csv", "DESSERT.csv")
+
+    # 모든 디저트 이름 (첫 번째 열 '날짜' 제외)
+    dessert_options = df_dessert.columns.tolist()
+
+    # --- 사이드바: 3. 디저트와 기간을 선택하게 해줘 ---
+    st.sidebar.header("🔍 검색 옵션")
+
+    # 디저트 선택
+    selected_dessert = st.sidebar.selectbox(
+        "**디저트 선택:**",
+        options=dessert_options,
+        index=0
+    )
+
+    # 기간 설정
+    min_date = df_dessert.index.min().date()
+    max_date = df_dessert.index.max().date()
+
+    col1, col2 = st.sidebar.columns(2)
     with col1:
-        date_col = st.selectbox("날짜 컬럼 선택", ["(자동탐지 실패)"] + list(dessert_df.columns), index=0 if date_col is None else list(dessert_df.columns).index(date_col)+1)
+        start_date = st.date_input(
+            "**시작 날짜:**",
+            min_value=min_date,
+            max_value=max_date,
+            value=min_date,
+            key='start_date'
+        )
     with col2:
-        dessert_col = st.selectbox("디저트 이름 컬럼 선택", ["(자동탐지 실패)"] + list(dessert_df.columns), index=0 if dessert_col is None else list(dessert_df.columns).index(dessert_col)+1)
-    with col3:
-        count_col = st.selectbox("검색수/카운트 컬럼 선택", ["(자동탐지 실패)"] + list(dessert_df.columns), index=0 if count_col is None else list(dessert_df.columns).index(count_col)+1)
+        end_date = st.date_input(
+            "**종료 날짜:**",
+            min_value=min_date,
+            max_value=max_date,
+            value=max_date,
+            key='end_date'
+        )
 
-# Try to parse dates
-try:
-    dessert_df[date_col] = pd.to_datetime(dessert_df[date_col])
-except Exception:
-    st.error(f"선택한 날짜 컬럼({date_col})을 날짜로 변환하지 못했습니다. 데이터 형식을 확인해주세요.")
-    st.stop()
+    # 날짜 유효성 검사
+    if start_date > end_date:
+        st.sidebar.error("시작 날짜는 종료 날짜보다 빠를 수 없습니다.")
+        return
 
-# Sidebar UI: dessert & date range
-st.sidebar.header("검색 조건")
-desserts_unique = sorted(dessert_df[dessert_col].dropna().astype(str).unique())
-selected_dessert = st.sidebar.selectbox("디저트를 선택하세요", desserts_unique)
-min_date = dessert_df[date_col].min().date()
-max_date = dessert_df[date_col].max().date()
-default_start = max_date - datetime.timedelta(days=30)
-selected_range = st.sidebar.date_input("기간 선택 (시작, 종료)", value=(default_start, max_date), min_value=min_date, max_value=max_date)
+    # --- 메인 영역: 4. Plotly 그래프 출력 ---
+    st.header(f"📈 {selected_dessert} 검색 트렌드")
+    fig = create_line_chart(df_dessert, selected_dessert, start_date, end_date)
+    st.plotly_chart(fig, use_container_width=True)
 
-if len(selected_range) != 2:
-    st.error("기간은 시작과 종료, 두 날짜를 입력해야 합니다.")
-    st.stop()
-start_date, end_date = selected_range
-start_dt = pd.to_datetime(start_date)
-end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    st.markdown("---")
 
-# Filter data
-mask = (dessert_df[date_col] >= start_dt) & (dessert_df[date_col] <= end_dt) & (dessert_df[dessert_col].astype(str) == str(selected_dessert))
-filtered = dessert_df.loc[mask].copy()
-st.subheader(f"선택: {selected_dessert} — {start_date} 부터 {end_date} 까지")
-st.write(f"기간 내 총 관측치: {len(filtered)}")
+    # --- 6. 선택한 디저트를 판매하는 카페를 추천해드릴까요? (Yes/No) ---
+    st.header("📍 맞춤형 카페 추천")
 
-if len(filtered) == 0:
-    st.info("선택한 기간/디저트의 데이터가 없습니다. 전체 디저트 트렌드를 대신 보여드립니다.")
-    # show aggregated trend for that dessert name across all dates
-    agg = dessert_df.groupby(pd.Grouper(key=date_col, freq="D"))[count_col].sum().reset_index()
-else:
-    agg = filtered.groupby(pd.Grouper(key=date_col, freq="D"))[count_col].sum().reset_index()
+    st.subheader("선택한 디저트를 판매하는 카페를 추천해드릴까요?")
+    
+    # 7. 만약 no라면 거기서 멈추고 yes라면 5번의 데이터에 맞는 카페를 소개해줘
+    col_yes, col_no, _ = st.columns([1, 1, 4])
+    with col_yes:
+        yes_button = st.button("✅ Yes")
+    with col_no:
+        no_button = st.button("❌ No")
 
-# Fill missing days
-agg = agg.set_index(date_col).asfreq("D", fill_value=0).reset_index()
+    if yes_button:
+        # 5. CAFE 파일 데이터 판다스로 분석해줘 (이미 load_data에서 분석됨)
+        # 선택한 디저트와 매칭되는 카페 정보 필터링
+        recommended_cafes = df_cafe[df_cafe['디저트'] == selected_dessert]
 
-# Plot with plotly
-st.header("2) 트렌드 그래프 (Plotly)")
-fig = px.line(agg, x=date_col, y=count_col, title=f"{selected_dessert} 검색량 추이", markers=True)
-fig.update_layout(template="plotly_white",
-                  plot_bgcolor="rgba(0,0,0,0)",
-                  paper_bgcolor="rgba(0,0,0,0)",
-                  xaxis_title="날짜",
-                  yaxis_title="검색 수 / 언급 수")
-st.plotly_chart(fig, use_container_width=True)
+        if not recommended_cafes.empty:
+            st.success(f"🥳 **{selected_dessert}**를 판매하는 추천 카페입니다!")
+            
+            # 카페 정보 테이블 출력
+            st.dataframe(
+                recommended_cafes[['디저트', '카페1', '위치1', '카페2', '위치2', '비고']]
+                .rename(columns={'카페1': '추천 카페 A', '위치1': '위치 A', '카페2': '추천 카페 B', '위치2': '위치 B'}),
+                use_container_width=True
+            )
 
-# Simple stats
-st.header("3) 간단 통계")
-col_a, col_b, col_c = st.columns(3)
-with col_a:
-    st.metric("기간 합계", int(agg[count_col].sum()))
-with col_b:
-    st.metric("평균(일)", round(float(agg[count_col].mean()),2))
-with col_c:
-    st.metric("최대값(일)", int(agg[count_col].max()))
-
-# ---------- CAFE.csv analysis ----------
-st.header("4) CAFE.csv 데이터 확인")
-if cafe_df is None:
-    st.warning("CAFE.csv 파일이 없습니다. 추천 기능을 사용하려면 파일을 업로드하세요.")
-    cafe_df = pd.DataFrame()
-else:
-    st.write("파일 경로:", str(CAFE_CSV))
-    st.write("기본 정보:")
-    st.write(f"- 행: {len(cafe_df)}, 열: {len(cafe_df.columns)}")
-    st.dataframe(cafe_df.head(10))
-
-# Ask user if they'd like recommendations
-st.header("5) 카페 추천")
-want_reco = st.radio("선택한 디저트를 판매하는 카페를 추천해드릴까요?", ("Yes", "No"))
-
-if want_reco == "No":
-    st.info("요청하신 대로 카페 추천을 중단합니다. 다른 디저트/기간으로 다시 시도해 주세요.")
-else:
-    if cafe_df is None or cafe_df.empty:
-        st.warning("CAFE.csv 데이터가 없어서 추천을 제공할 수 없습니다.")
-    else:
-        # Try to find cafe columns
-        cafe_name_col = None
-        cafe_menu_col = None
-        cafe_addr_col = None
-        cafe_score_col = None
-        for c in cafe_df.columns:
-            lc = c.lower()
-            if any(x in lc for x in ["name","cafe","shop"]):
-                cafe_name_col = cafe_name_col or c
-            if any(x in lc for x in ["menu","dessert","items","product"]):
-                cafe_menu_col = cafe_menu_col or c
-            if any(x in lc for x in ["addr","address","location","place"]):
-                cafe_addr_col = cafe_addr_col or c
-            if any(x in lc for x in ["score","rating","rate","stars"]):
-                cafe_score_col = cafe_score_col or c
-
-        # fallback defaults
-        if cafe_name_col is None:
-            cafe_name_col = cafe_df.columns[0]
-        if cafe_menu_col is None:
-            # try a string column with many unique values
-            for c in cafe_df.select_dtypes(include=["object"]).columns:
-                if cafe_df[c].astype(str).str.contains(str(selected_dessert), case=False).any():
-                    cafe_menu_col = c
-                    break
-            if cafe_menu_col is None:
-                cafe_menu_col = cafe_df.select_dtypes(include=["object"]).columns[0] if len(cafe_df.columns)>0 else None
-
-        # Filter cafes that mention the dessert (case-insensitive substring match)
-        mask_cafe = cafe_df[cafe_menu_col].astype(str).str.contains(str(selected_dessert), case=False, na=False)
-        matches = cafe_df.loc[mask_cafe].copy()
-        if matches.empty:
-            st.info("데이터에서 해당 디저트를 판매하는 카페를 찾지 못했습니다. (CAFE.csv의 메뉴/설명 컬럼을 확인하세요)")
+            # 지도 링크 추가 (선택 사항)
+            for _, row in recommended_cafes.iterrows():
+                st.markdown(f"""
+                * **{row['카페1']}** 위치: [{row['위치1']}](https://map.naver.com/v5/search/{row['위치1']} 'Naver Map으로 이동')
+                * **{row['카페2']}** 위치: [{row['위치2']}](https://map.naver.com/v5/search/{row['위치2']} 'Naver Map으로 이동')
+                """)
         else:
-            # Sort by score if exists
-            if cafe_score_col and cafe_score_col in matches.columns:
-                try:
-                    matches[cafe_score_col] = pd.to_numeric(matches[cafe_score_col], errors="coerce")
-                    matches = matches.sort_values(by=cafe_score_col, ascending=False)
-                except Exception:
-                    pass
+            st.warning(f"😔 **{selected_dessert}**에 대한 추천 카페 정보를 찾을 수 없습니다.")
 
-            st.subheader(f"'{selected_dessert}'을(를) 판매하는 카페 추천 ({len(matches)}곳)")
-            display_cols = [c for c in [cafe_name_col, cafe_menu_col, cafe_addr_col, cafe_score_col] if c and c in matches.columns]
-            st.dataframe(matches[display_cols].reset_index(drop=True))
+    elif no_button:
+        st.info("알겠습니다. 다음에 필요하면 다시 요청해주세요! 👋")
 
-            # Show map if lat/lon columns exist
-            lat_col = None
-            lon_col = None
-            for c in matches.columns:
-                if "lat" in c.lower():
-                    lat_col = c
-                if "lon" in c.lower() or "lng" in c.lower():
-                    lon_col = c
-            if lat_col and lon_col:
-                st.subheader("위치 지도")
-                try:
-                    map_df = matches[[lat_col, lon_col]].dropna()
-                    map_df = map_df.rename(columns={lat_col:"lat", lon_col:"lon"})
-                    st.map(map_df)
-                except Exception:
-                    pass
-
-st.markdown("---")
-st.markdown("앱 제작자: 자동 생성 스크립트 • 색상 테마: 베이지/갈색")
+if __name__ == "__main__":
+    main()
